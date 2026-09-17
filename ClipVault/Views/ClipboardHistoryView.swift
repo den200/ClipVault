@@ -63,6 +63,14 @@ struct ClipboardHistoryView: View {
             Table(viewModel.filteredItems) {
                 TableColumn("Preview") { item in
                     HStack(spacing: 4) {
+                        if item.isImage, let thumbnail = item.getImageThumbnail(maxPixelSize: 120) {
+                            Image(nsImage: thumbnail)
+                                .resizable()
+                                .scaledToFit()
+                                .frame(width: 72, height: 52)
+                                .clipShape(RoundedRectangle(cornerRadius: 4))
+                                .accessibilityLabel("Clipboard image")
+                        }
                         // Show RTF indicator icon if item has rich text data
                         if item.rtfData != nil {
                             Image(systemName: "textformat")
@@ -74,6 +82,7 @@ struct ClipboardHistoryView: View {
 
                         Text(item.getPreviewText(maxLength: 80))
                             .lineLimit(1)
+                            .foregroundColor(item.isImage ? .secondary : .primary)
                     }
                 }
                 .width(min: 200, ideal: 350, max: .infinity)

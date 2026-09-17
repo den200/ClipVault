@@ -22,6 +22,14 @@ class ClipItemManager {
     private lazy var persistentContainer: NSPersistentContainer = {
         let container = NSPersistentContainer(name: containerName)
 
+        // The image payload fields are an additive model change. Keep migration
+        // inference explicit so databases created by older ClipVault releases
+        // are upgraded in place without touching their encrypted contents.
+        container.persistentStoreDescriptions.forEach {
+            $0.shouldMigrateStoreAutomatically = true
+            $0.shouldInferMappingModelAutomatically = true
+        }
+
         #if DEBUG
         if useInMemoryStore {
             let description = NSPersistentStoreDescription()
@@ -100,6 +108,8 @@ class ClipItemManager {
             // Store BOTH plain text (for search/preview) and RTF data (for pasting)
             try item.setEncryptedText(plainText)
             try item.setEncryptedRTF(rtfData)
+        case .image(let data, let type):
+            try item.setEncryptedImage(data, type: type)
         }
 
         try context.save()
@@ -170,11 +180,19 @@ class ClipItemManager {
 
     /// Writes an item to the system pasteboard
     func writeToPasteboard(_ item: ClipItem) -> Bool {
-        let pasteboard = NSPasteboard.general
+        writeToPasteboard(item, pasteboard: .general)
+    }
+
+    /// Pasteboard injection keeps restoration testable without changing the
+    /// production call sites that always use the system clipboard.
+    func writeToPasteboard(_ item: ClipItem, pasteboard: NSPasteboard) -> Bool {
         pasteboard.clearContents()
 
-        // If RTF data exists, paste as RTF; otherwise paste as plain text
-        if let rtfData = item.getDecryptedRTF() {
+        // Images have no plaintext fallback: decryption must succeed before any
+        // bytes are placed back on the pasteboard.
+        if let image = item.getDecryptedImage() {
+            return pasteboard.setData(image.data, forType: image.type)
+        } else if let rtfData = item.getDecryptedRTF() {
             return pasteboard.setData(rtfData, forType: .rtf)
         } else if let text = item.getDecryptedText() {
             return pasteboard.setString(text, forType: .string)
@@ -192,7 +210,10 @@ class ClipItemManager {
     }
 
     private func enforceMaxItemsLimit() throws {
-        let maxItems = settings.maxHistoryItems
+        // UserDefaults may contain an out-of-range value after manual edits,
+        // profile management, or an older app version. A negative value would
+        // trap in suffix(from:), so normalize it before indexing the result.
+        let maxItems = max(1, settings.maxHistoryItems)
 
         let request = ClipItem.fetchRequest()
         request.predicate = NSPredicate(format: "isPinned == NO")
@@ -214,6 +235,9 @@ class ClipItemManager {
         case .rtf(let plainText, _):
             // Use plain text for hash so same content with different formatting = duplicate
             return ClipItem.computeHash(for: plainText)
+        case .image(let data, _):
+            // Hash the exact canonical representation selected at capture time.
+            return ClipItem.computeHash(for: data)
         }
     }
 }
@@ -223,4 +247,5 @@ class ClipItemManager {
 enum ClipContent {
     case text(String)
     case rtf(plainText: String, rtfData: Data)
+    case image(data: Data, type: NSPasteboard.PasteboardType)
 }

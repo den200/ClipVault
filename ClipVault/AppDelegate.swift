@@ -98,7 +98,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // MARK: - Menu Bar Actions
 
     @objc private func statusBarButtonClicked() {
-        let event = NSApp.currentEvent!
+        // AppKit normally supplies a mouse event, but actions can also be sent
+        // programmatically or after the originating event has left the queue.
+        // Treat those invocations as a normal left click instead of crashing on
+        // a force unwrap.
+        guard let event = NSApp.currentEvent else {
+            AppLogger.ui.notice("Status item action arrived without a current event")
+            showMenu()
+            return
+        }
 
         if event.type == .rightMouseUp {
             // Right click - show context menu with settings/quit
@@ -256,8 +264,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let menuItem = NSMenuItem(title: "\(preview) (\(timeAgo))", action: #selector(clipItemSelected(_:)), keyEquivalent: "")
         menuItem.representedObject = item
 
-        // Set icon based on app bundle ID
-        if let bundleID = item.appBundleID,
+        // Images use a small, downsampled preview; other items retain their
+        // source application icon.
+        if item.isImage, let thumbnail = item.getImageThumbnail(maxPixelSize: 32) {
+            thumbnail.size = NSSize(width: 24, height: 24)
+            menuItem.image = thumbnail
+        } else if let bundleID = item.appBundleID,
            let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) {
             let icon = NSWorkspace.shared.icon(forFile: appURL.path)
             icon.size = NSSize(width: 16, height: 16)
@@ -295,6 +307,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // MARK: - Actions
 
     @objc private func searchFieldTextDidChange(_ notification: Notification) {
+        // Ignore delayed notifications from a search field belonging to an old
+        // menu. The menu is rebuilt every time the status item is opened.
+        guard notification.object as? NSSearchField === searchField,
+              menu.numberOfItems >= 5 else {
+            return
+        }
+
         currentSearchQuery = searchField.stringValue
 
         AppLogger.ui.debug("Search query changed (length: \(self.currentSearchQuery.count))")
@@ -305,8 +324,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         // Keep: [0] = search field, [1] = separator, [last-3] = separator, [last-2] = View All, [last-1] = Settings
         // Remove everything in between (the results section)
-        for i in stride(from: itemCount - 4, through: 2, by: -1) {
-            menu.removeItem(at: i)
+        if itemCount > 5 {
+            for i in stride(from: itemCount - 4, through: 2, by: -1) {
+                guard i >= 0, i < menu.numberOfItems else { continue }
+                menu.removeItem(at: i)
+            }
         }
 
         // Re-add results at position 2 (after search field and first separator)

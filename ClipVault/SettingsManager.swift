@@ -44,8 +44,8 @@ class SettingsManager {
     // MARK: - General Settings
 
     var maxHistoryItems: Int {
-        get { defaults.integer(forKey: Keys.maxHistoryItems) }
-        set { defaults.set(newValue, forKey: Keys.maxHistoryItems) }
+        get { min(max(defaults.integer(forKey: Keys.maxHistoryItems), 1), 10_000) }
+        set { defaults.set(min(max(newValue, 1), 10_000), forKey: Keys.maxHistoryItems) }
     }
 
     var captureText: Bool {

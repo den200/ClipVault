@@ -20,6 +20,16 @@ class ClipboardMonitor {
     private let itemManager = ClipItemManager.shared
     private let exclusionManager = ExclusionManager.shared
 
+    /// Protects the database and UI from pathological clipboard providers while
+    /// still allowing large, full-resolution Retina screenshots.
+    static let maximumImageSize = 50 * 1_024 * 1_024
+
+    /// Prefer a lossless representation already supplied by the source. Reading
+    /// raw data here avoids decoding an image during the 300 ms polling path.
+    static let supportedImageTypes: [NSPasteboard.PasteboardType] = [
+        .png, .tiff, NSPasteboard.PasteboardType("public.jpeg")
+    ]
+
     // Callback invoked when a new clipboard item is detected and saved
     var onNewClipDetected: ((ClipItem) -> Void)?
 
@@ -83,11 +93,22 @@ class ClipboardMonitor {
         }
 
         // Try to capture different types based on settings and availability
-        // PRIORITY ORDER: RTF > Plain Text
-        // This ensures rich formatting (bold, italic, colors) is preserved when available
+        // PRIORITY ORDER: Image > RTF > Plain Text. An image item often also
+        // advertises text or metadata; selecting one canonical image type avoids
+        // duplicate captures and prevents that metadata becoming the clip.
+
+        if let image = Self.imageContent(from: pasteboard) {
+            do {
+                let item = try itemManager.saveClipItem(content: image, appBundleID: appBundleID)
+                onNewClipDetected?(item)
+                AppLogger.clipboard.debug("Captured image (app: \(appBundleID ?? "unknown", privacy: .public))")
+            } catch {
+                AppLogger.clipboard.error("Failed to save image item: \(error.localizedDescription, privacy: .public)")
+            }
+        }
 
         // Priority 1: RTF (preserves formatting like bold, italic, colors)
-        if settings.captureRTF, let rtfData = pasteboard.data(forType: .rtf), !rtfData.isEmpty {
+        else if settings.captureRTF, let rtfData = pasteboard.data(forType: .rtf), !rtfData.isEmpty {
             do {
                 // Extract plain text from RTF for preview and search
                 let plainText: String
@@ -134,7 +155,21 @@ class ClipboardMonitor {
             }
         }
         else {
-            AppLogger.clipboard.debug("Skipped capture: no text content or capture disabled")
+            AppLogger.clipboard.debug("Skipped capture: no supported content or capture disabled")
         }
+    }
+
+    /// Returns at most one image representation, in a stable preference order.
+    /// Data over the limit is ignored rather than decoded or persisted.
+    static func imageContent(from pasteboard: NSPasteboard) -> ClipContent? {
+        for type in supportedImageTypes where pasteboard.availableType(from: [type]) != nil {
+            guard let data = pasteboard.data(forType: type), !data.isEmpty else { continue }
+            guard data.count <= maximumImageSize else {
+                AppLogger.clipboard.notice("Skipped image larger than \(maximumImageSize) bytes")
+                return nil
+            }
+            return .image(data: data, type: type)
+        }
+        return nil
     }
 }

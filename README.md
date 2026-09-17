@@ -10,6 +10,7 @@ A secure, privacy-focused clipboard manager for macOS with AES-256-GCM encryptio
 - **AES-256-GCM encryption** - All content encrypted at rest with keys in macOS Keychain
 - **Smart content filtering** - Auto-detects and excludes passwords, API keys, SSH keys, credit cards
 - **Rich text support** - Preserves bold, italic, colors, and formatting
+- **Image and screenshot history** - Retains PNG, TIFF, and JPEG clipboard images with encrypted storage and thumbnail previews
 - **Source app tracking** - See which app each item came from with native icons
 - **Pin important items** - Keep frequently used snippets at the top
 - **Real-time search** - Instantly filter clipboard history
