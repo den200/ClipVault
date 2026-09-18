@@ -66,18 +66,34 @@ class EncryptionManager {
             return key
         }
 
-        // Try to load existing key from Keychain
-        if let keyData = try? loadKeyFromKeychain() {
-            let key = SymmetricKey(data: keyData)
-            cachedKey = key
-            return key
-        }
-
-        // Generate new key and store it
-        let key = SymmetricKey(size: .bits256)
-        try saveKeyToKeychain(key)
+        let data = try Self.loadOrCreateKeyData(load: loadKeyFromKeychain, save: { data in
+            try self.saveKeyToKeychain(SymmetricKey(data: data))
+        })
+        let key = SymmetricKey(data: data)
         cachedKey = key
         return key
+    }
+
+    /// Only an explicitly missing key permits creation. Access errors must
+    /// never replace a key protecting existing history.
+    static func loadOrCreateKeyData(load: () throws -> Data, save: (Data) throws -> Void) throws -> Data {
+        func validated(_ data: Data) throws -> Data {
+            guard data.count == 32 else { throw EncryptionError.invalidKeyData }
+            return data
+        }
+        do {
+            return try validated(load())
+        } catch EncryptionError.keyNotFound {
+            let data = SymmetricKey(size: .bits256).withUnsafeBytes { Data($0) }
+            do {
+                try save(data)
+                return data
+            } catch EncryptionError.keychainError(let status) where status == errSecDuplicateItem {
+                // Another process created the key concurrently. Use its key;
+                // never update or overwrite the existing Keychain item.
+                return try validated(load())
+            }
+        }
     }
 
     private func saveKeyToKeychain(_ key: SymmetricKey) throws {
@@ -93,21 +109,7 @@ class EncryptionManager {
         // Try to add the key first
         let status = SecItemAdd(query as CFDictionary, nil)
 
-        if status == errSecDuplicateItem {
-            // Key already exists, update it instead
-            let updateQuery: [String: Any] = [
-                kSecClass as String: kSecClassGenericPassword,
-                kSecAttrAccount as String: keyTag
-            ]
-            let attributesToUpdate: [String: Any] = [
-                kSecValueData as String: keyData
-            ]
-            let updateStatus = SecItemUpdate(updateQuery as CFDictionary, attributesToUpdate as CFDictionary)
-
-            guard updateStatus == errSecSuccess else {
-                throw EncryptionError.keychainError(updateStatus)
-            }
-        } else if status != errSecSuccess {
+        guard status == errSecSuccess else {
             throw EncryptionError.keychainError(status)
         }
     }
@@ -122,9 +124,9 @@ class EncryptionManager {
         var result: AnyObject?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
 
-        guard status == errSecSuccess, let keyData = result as? Data else {
-            throw EncryptionError.keyNotFound
-        }
+        if status == errSecItemNotFound { throw EncryptionError.keyNotFound }
+        guard status == errSecSuccess else { throw EncryptionError.keychainError(status) }
+        guard let keyData = result as? Data else { throw EncryptionError.invalidKeyData }
 
         return keyData
     }
@@ -136,6 +138,7 @@ class EncryptionManager {
         case decryptionFailed
         case invalidInput
         case invalidOutput
+        case invalidKeyData
         case keyNotFound
         case keychainError(OSStatus)
 
@@ -149,6 +152,8 @@ class EncryptionManager {
                 return "Invalid input data"
             case .invalidOutput:
                 return "Invalid output data"
+            case .invalidKeyData:
+                return "Invalid encryption key in Keychain"
             case .keyNotFound:
                 return "Encryption key not found in Keychain"
             case .keychainError(let status):

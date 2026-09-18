@@ -11,10 +11,11 @@ import OSLog
 
 class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem!
-    private var menu: NSMenu!
-    private var searchField: NSSearchField!
+    private(set) var menu: NSMenu!
+    private(set) var searchField: NSSearchField!
     private var searchFieldContainer: NSView!
     private var currentSearchQuery: String = ""
+    private var resultsEndSeparator: NSMenuItem?
 
     private let clipboardMonitor = ClipboardMonitor.shared
     private let itemManager = ClipItemManager.shared
@@ -153,7 +154,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    private func buildMainMenu() {
+    func buildMainMenu() {
         if let searchField {
             NotificationCenter.default.removeObserver(self, name: NSControl.textDidChangeNotification, object: searchField)
         }
@@ -197,8 +198,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         menu.addItem(NSMenuItem.separator())
 
+        resultsEndSeparator = menu.items.last
+
         // Footer
         menu.addItem(NSMenuItem(title: "Clipboard History", action: #selector(openViewAll), keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: "Clear History…", action: #selector(clearHistoryWithConfirmation), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "Settings", action: #selector(openSettings), keyEquivalent: ""))
     }
 
@@ -315,28 +319,19 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // MARK: - Actions
 
-    @objc private func searchFieldTextDidChange(_ notification: Notification) {
-        // Ignore delayed notifications from a search field belonging to an old
-        // menu. The menu is rebuilt every time the status item is opened.
+    @objc func searchFieldTextDidChange(_ notification: Notification) {
         guard notification.object as? NSSearchField === searchField,
-              menu.numberOfItems >= 5 else {
-            return
-        }
-
+              let menu, let separator = resultsEndSeparator else { return }
+        let endIndex = menu.index(of: separator)
+        guard endIndex >= 2 else { return }
         currentSearchQuery = searchField.stringValue
-
         AppLogger.ui.debug("Search query changed (length: \(self.currentSearchQuery.count))")
 
-        // Remove all items except search field (index 0), separator (index 1), final separator and footer
-        // Count backwards to avoid index issues
-        let itemCount = menu.numberOfItems
-
-        // Keep: [0] = search field, [1] = separator, [last-3] = separator, [last-2] = View All, [last-1] = Settings
-        // Remove everything in between (the results section)
-        if itemCount > 5 {
-            for i in stride(from: itemCount - 4, through: 2, by: -1) {
-                guard i >= 0, i < menu.numberOfItems else { continue }
-                menu.removeItem(at: i)
+        // Locate the results boundary by identity, so adding footer actions
+        // cannot accidentally remove the separator or those actions.
+        if endIndex > 2 {
+            for index in stride(from: endIndex - 1, through: 2, by: -1) {
+                menu.removeItem(at: index)
             }
         }
 
@@ -413,11 +408,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         alert.messageText = "Clear Clipboard History?"
         alert.informativeText = "This will delete all non-pinned items from your clipboard history. Pinned items will be kept."
         alert.alertStyle = .warning
-        alert.addButton(withTitle: "Clear")
         alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: "Clear")
+        NSApp.activate(ignoringOtherApps: true)
 
         let response = alert.runModal()
-        if response == .alertFirstButtonReturn {
+        if response == .alertSecondButtonReturn {
             do {
                 try itemManager.clearHistory()
                 AppLogger.ui.info("Cleared clipboard history")

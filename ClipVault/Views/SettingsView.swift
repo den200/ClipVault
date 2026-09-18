@@ -210,7 +210,7 @@ struct SettingsView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Auto-paste on Select")
                         .font(.subheadline)
-                    Text("Automatically paste when clicking an item")
+                    Text("Selecting a clip copies it and presses ⌘V in your previous app. When off, paste it yourself.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
