@@ -11,10 +11,11 @@ import AppKit
 class SettingsManager {
     static let shared = SettingsManager()
 
-    private let defaults = UserDefaults.standard
+    private let defaults: UserDefaults
 
     // UserDefaults Keys
     private enum Keys {
+        static let imageStorageLimitMB = "imageStorageLimitMB"
         static let maxHistoryItems = "maxHistoryItems"
         static let captureText = "captureText"
         static let captureRTF = "captureRTF"
@@ -24,7 +25,8 @@ class SettingsManager {
         static let launchAtLogin = "launchAtLogin"
     }
 
-    private init() {
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
         // Set default values on first launch
         registerDefaults()
     }
@@ -32,6 +34,7 @@ class SettingsManager {
     private func registerDefaults() {
         defaults.register(defaults: [
             Keys.maxHistoryItems: 100,
+            Keys.imageStorageLimitMB: 1000,
             Keys.captureText: true,
             Keys.captureRTF: true,
             Keys.autoPasteOnSelect: false,
@@ -47,6 +50,14 @@ class SettingsManager {
         get { min(max(defaults.integer(forKey: Keys.maxHistoryItems), 1), 10_000) }
         set { defaults.set(min(max(newValue, 1), 10_000), forKey: Keys.maxHistoryItems) }
     }
+
+    /// Decimal MB: 1000 MB is 1 GB. No unlimited setting.
+    var imageStorageLimitMB: Int {
+        get { min(max(defaults.object(forKey: Keys.imageStorageLimitMB) as? Int ?? 1000, 100), 100_000) }
+        set { defaults.set(min(max(newValue, 100), 100_000), forKey: Keys.imageStorageLimitMB) }
+    }
+
+    var imageStorageLimitBytes: Int64 { Int64(imageStorageLimitMB) * 1_000_000 }
 
     var captureText: Bool {
         get { defaults.bool(forKey: Keys.captureText) }
@@ -98,6 +109,7 @@ class SettingsManager {
 
     func resetToDefaults() {
         maxHistoryItems = 100
+        imageStorageLimitMB = 1000
         captureText = true
         captureRTF = true
         autoPasteOnSelect = false

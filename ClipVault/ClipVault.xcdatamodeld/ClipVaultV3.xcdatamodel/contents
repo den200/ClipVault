@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<model type="com.apple.IDECoreDataModeler.DataModel" documentVersion="1.0" lastSavedToolsVersion="24299" systemVersion="24G84" minimumToolsVersion="Automatic" sourceLanguage="Swift" usedWithSwiftData="YES" userDefinedModelVersionIdentifier="">
+    <entity name="ClipItem" representedClassName="ClipItem" syncable="YES" codeGenerationType="category">
+        <attribute name="appBundleID" optional="YES" attributeType="String"/>
+        <attribute name="contentHash" attributeType="String"/>
+        <attribute name="dateAdded" optional="YES" attributeType="Date" usesScalarValueType="NO"/>
+        <attribute name="encryptedMetadata" optional="YES" attributeType="Binary"/>
+        <attribute name="imageByteCount" attributeType="Integer 64" defaultValueString="0" usesScalarValueType="YES"/>
+        <attribute name="id" attributeType="UUID" usesScalarValueType="NO"/>
+        <attribute name="imageData" optional="YES" attributeType="Binary"/>
+        <attribute name="imageType" optional="YES" attributeType="String"/>
+        <attribute name="isPinned" attributeType="Boolean" defaultValueString="NO" usesScalarValueType="YES"/>
+        <attribute name="rtfData" optional="YES" attributeType="Binary"/>
+        <attribute name="textContent" optional="YES" attributeType="Binary"/>
+        <uniquenessConstraints>
+            <uniquenessConstraint>
+                <constraint value="contentHash"/>
+            </uniquenessConstraint>
+        </uniquenessConstraints>
+    </entity>
+</model>

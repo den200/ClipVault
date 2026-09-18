@@ -84,7 +84,7 @@ class ClipboardMonitor {
 
         // Check if this app should be excluded
         if let bundleID = appBundleID, exclusionManager.shouldExclude(appBundleID: bundleID) {
-            AppLogger.privacy.debug("Skipped capture: excluded app [\(bundleID, privacy: .public)]")
+            AppLogger.privacy.debug("Skipped capture: excluded app [\(bundleID, privacy: .private)]")
             return
         }
 
@@ -98,9 +98,9 @@ class ClipboardMonitor {
             do {
                 let item = try itemManager.saveClipItem(content: image, appBundleID: appBundleID)
                 onNewClipDetected?(item)
-                AppLogger.clipboard.debug("Captured image (app: \(appBundleID ?? "unknown", privacy: .public))")
+                AppLogger.clipboard.debug("Captured image (app: \(appBundleID ?? "unknown", privacy: .private))")
             } catch {
-                AppLogger.clipboard.error("Failed to save image item: \(error.localizedDescription, privacy: .public)")
+                AppLogger.clipboard.error("Failed to save image item: \(error.localizedDescription, privacy: .private)")
             }
         }
 
@@ -127,9 +127,9 @@ class ClipboardMonitor {
                     appBundleID: appBundleID
                 )
                 onNewClipDetected?(item)
-                AppLogger.clipboard.debug("Captured RTF (bytes: \(rtfData.count), chars: \(plainText.count), app: \(appBundleID ?? "unknown", privacy: .public))")
+                AppLogger.clipboard.debug("Captured RTF (bytes: \(rtfData.count), chars: \(plainText.count), app: \(appBundleID ?? "unknown", privacy: .private))")
             } catch {
-                AppLogger.clipboard.error("Failed to save RTF item: \(error.localizedDescription, privacy: .public)")
+                AppLogger.clipboard.error("Failed to save RTF item: \(error.localizedDescription, privacy: .private)")
             }
         }
         // Priority 2: Plain text (only if RTF not available)
@@ -146,9 +146,9 @@ class ClipboardMonitor {
                     appBundleID: appBundleID
                 )
                 onNewClipDetected?(item)
-                AppLogger.clipboard.debug("Captured text (chars: \(string.count), app: \(appBundleID ?? "unknown", privacy: .public))")
+                AppLogger.clipboard.debug("Captured text (chars: \(string.count), app: \(appBundleID ?? "unknown", privacy: .private))")
             } catch {
-                AppLogger.clipboard.error("Failed to save text item: \(error.localizedDescription, privacy: .public)")
+                AppLogger.clipboard.error("Failed to save text item: \(error.localizedDescription, privacy: .private)")
             }
         }
         else {

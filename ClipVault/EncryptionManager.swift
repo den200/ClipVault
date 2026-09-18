@@ -33,7 +33,7 @@ class EncryptionManager {
 
     /// Decrypts data that was encrypted with AES-GCM
     func decrypt(_ data: Data) throws -> Data {
-        let key = try getOrCreateKey()
+        let key = try getOrCreateKey(createIfMissing: false)
         let sealedBox = try AES.GCM.SealedBox(combined: data)
         let decryptedData = try AES.GCM.open(sealedBox, using: key)
 
@@ -57,18 +57,41 @@ class EncryptionManager {
         return string
     }
 
+    // Separate purpose keys; the existing Keychain entry is not changed.
+    private func purposeKey(_ purpose: String, createIfMissing: Bool = true) throws -> SymmetricKey {
+        HKDF<SHA256>.deriveKey(inputKeyMaterial: try getOrCreateKey(createIfMissing: createIfMissing),
+            salt: Data("ClipVault-v1".utf8), info: Data(purpose.utf8), outputByteCount: 32)
+    }
+
+    func deduplicationHash(legacyHash: String, isImage: Bool) throws -> String {
+        let input = Data("\(isImage ? "image" : "text"):\(legacyHash)".utf8)
+        let code = HMAC<SHA256>.authenticationCode(for: input, using: try purposeKey("deduplication"))
+        return "hmac1:" + code.map { String(format: "%02x", $0) }.joined()
+    }
+
+    func encryptMetadata(_ data: Data, itemID: UUID) throws -> Data {
+        let sealed = try AES.GCM.seal(data, using: purposeKey("metadata"), authenticating: Data(itemID.uuidString.utf8))
+        guard let combined = sealed.combined else { throw EncryptionError.encryptionFailed }
+        return combined
+    }
+
+    func decryptMetadata(_ data: Data, itemID: UUID) throws -> Data {
+        try AES.GCM.open(AES.GCM.SealedBox(combined: data), using: purposeKey("metadata", createIfMissing: false), authenticating: Data(itemID.uuidString.utf8))
+    }
+
     // MARK: - Key Management
 
     /// Retrieves the encryption key from Keychain, or creates a new one if it doesn't exist
-    private func getOrCreateKey() throws -> SymmetricKey {
+    private func getOrCreateKey(createIfMissing: Bool = true) throws -> SymmetricKey {
         // Return cached key if available
         if let key = cachedKey {
             return key
         }
 
-        let data = try Self.loadOrCreateKeyData(load: loadKeyFromKeychain, save: { data in
+        let data = try createIfMissing ? Self.loadOrCreateKeyData(load: loadKeyFromKeychain, save: { data in
             try self.saveKeyToKeychain(SymmetricKey(data: data))
-        })
+        }) : loadKeyFromKeychain()
+        guard data.count == 32 else { throw EncryptionError.invalidKeyData }
         let key = SymmetricKey(data: data)
         cachedKey = key
         return key

@@ -15,7 +15,18 @@ import ImageIO
 
 @objc(ClipItem)
 public class ClipItem: NSManagedObject {
+    private var metadataCache: (id: UUID, ciphertext: Data, metadata: ClipMetadata)?
     // Properties are defined in the auto-generated ClipItem+CoreDataProperties.swift
+}
+
+struct ClipMetadata: Codable {
+    var version = 1
+    var dateAdded: Date?
+    var firstCapturedAt: Date?
+    var appBundleID: String?
+    var imageType: String?
+    var imageByteCount: Int64 = 0
+    var contentHash: String?
 }
 
 // MARK: - Convenience Extensions
@@ -23,6 +34,42 @@ public class ClipItem: NSManagedObject {
 extension ClipItem {
 
     private static let thumbnailCache = NSCache<NSString, NSImage>()
+
+    var supportsProtectedMetadata: Bool { entity.attributesByName["encryptedMetadata"] != nil }
+
+    func readMetadata() throws -> ClipMetadata {
+        if supportsProtectedMetadata, let ciphertext = encryptedMetadata {
+            guard let id else { throw EncryptionManager.EncryptionError.invalidInput }
+            if let cache = metadataCache, cache.id == id, cache.ciphertext == ciphertext {
+                guard cache.metadata.contentHash == contentHash else { throw EncryptionManager.EncryptionError.invalidOutput }
+                return cache.metadata
+            }
+            let data = try EncryptionManager.shared.decryptMetadata(ciphertext, itemID: id)
+            let metadata = try JSONDecoder().decode(ClipMetadata.self, from: data)
+            guard metadata.version == 1, metadata.contentHash == contentHash else { throw EncryptionManager.EncryptionError.invalidOutput }
+            metadataCache = (id, ciphertext, metadata)
+            return metadata
+        }
+        return ClipMetadata(dateAdded: dateAdded, firstCapturedAt: dateAdded, appBundleID: appBundleID, imageType: imageType)
+    }
+
+    func storeMetadata(_ metadata: ClipMetadata) throws {
+        guard supportsProtectedMetadata, let id else { throw EncryptionManager.EncryptionError.invalidInput }
+        var protected = metadata
+        protected.contentHash = contentHash
+        let data = try JSONEncoder().encode(protected)
+        let ciphertext = try EncryptionManager.shared.encryptMetadata(data, itemID: id)
+        encryptedMetadata = ciphertext
+        dateAdded = nil
+        appBundleID = nil
+        imageType = nil
+        metadataCache = (id, ciphertext, protected)
+    }
+
+    var displayDate: Date? { (try? readMetadata())?.dateAdded }
+    var sourceAppBundleID: String? { (try? readMetadata())?.appBundleID }
+
+    static func clearThumbnailCache() { thumbnailCache.removeAllObjects() }
 
     /// Returns the decrypted text content
     func getDecryptedText() -> String? {
@@ -49,16 +96,25 @@ extension ClipItem {
     /// Decrypts image bytes only when needed for restoration or a thumbnail.
     func getDecryptedImage() -> (data: Data, type: NSPasteboard.PasteboardType)? {
         guard let encryptedData = imageData,
-              let imageType,
+              let type = (try? readMetadata())?.imageType,
               let data = try? EncryptionManager.shared.decrypt(encryptedData) else { return nil }
-        return (data, NSPasteboard.PasteboardType(imageType))
+        return (data, NSPasteboard.PasteboardType(type))
     }
 
     /// Encrypts the original pasteboard representation before assigning it to
     /// Core Data. Encryption failure therefore cannot fall back to plaintext.
     func setEncryptedImage(_ data: Data, type: NSPasteboard.PasteboardType) throws {
-        imageData = try EncryptionManager.shared.encrypt(data)
-        imageType = type.rawValue
+        let ciphertext = try EncryptionManager.shared.encrypt(data)
+        if supportsProtectedMetadata {
+            var metadata = try readMetadata()
+            metadata.imageType = type.rawValue
+            metadata.imageByteCount = Int64(ciphertext.count)
+            try storeMetadata(metadata)
+            imageByteCount = Int64(ciphertext.count)
+        } else {
+            imageType = type.rawValue
+        }
+        imageData = ciphertext
     }
 
     var isImage: Bool { imageData != nil }
@@ -94,7 +150,7 @@ extension ClipItem {
 
     /// Returns a relative time string (e.g., "2m ago", "1h ago")
     func getRelativeTimeString() -> String {
-        guard let dateAdded = dateAdded else { return "Unknown" }
+        guard let dateAdded = displayDate else { return "Unknown" }
         let now = Date()
         let interval = now.timeIntervalSince(dateAdded)
 
@@ -138,10 +194,7 @@ extension ClipItem {
     /// Fetch all items sorted by date (pinned first)
     static func fetchAllRequest() -> NSFetchRequest<ClipItem> {
         let request = fetchRequest()
-        request.sortDescriptors = [
-            NSSortDescriptor(keyPath: \ClipItem.isPinned, ascending: false),
-            NSSortDescriptor(keyPath: \ClipItem.dateAdded, ascending: false)
-        ]
+        // Protected timestamps are sorted in memory by the manager.
         return request
     }
 
@@ -150,10 +203,7 @@ extension ClipItem {
         let request = fetchRequest()
         // Note: We can't search encrypted content directly, so this will be limited
         // In practice, we'll need to fetch all and decrypt in memory for search
-        request.sortDescriptors = [
-            NSSortDescriptor(keyPath: \ClipItem.isPinned, ascending: false),
-            NSSortDescriptor(keyPath: \ClipItem.dateAdded, ascending: false)
-        ]
+        // Protected timestamps are sorted in memory by the manager.
         return request
     }
 

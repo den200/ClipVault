@@ -53,6 +53,7 @@ final class ImageClipboardTests: XCTestCase {
         context.persistentStoreCoordinator = coordinator
         let item = NSEntityDescription.insertNewObject(forEntityName: "ClipItem", into: context) as! ClipItem
 
+        item.id = UUID()
         try item.setEncryptedImage(onePixelPNG, type: .png)
 
         XCTAssertNotEqual(item.imageData, onePixelPNG)

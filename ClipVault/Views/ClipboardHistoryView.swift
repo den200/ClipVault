@@ -95,7 +95,7 @@ struct ClipboardHistoryView: View {
                 .width(ideal: 100)
 
                 TableColumn("App") { item in
-                    if let bundleID = item.appBundleID {
+                    if let bundleID = item.sourceAppBundleID {
                         HStack(spacing: 6) {
                             // App icon
                             if let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) {
@@ -190,14 +190,14 @@ class ClipboardHistoryViewModel: ObservableObject {
 
         // Filter by app
         if let appFilter = selectedAppFilter {
-            result = result.filter { $0.appBundleID == appFilter }
+            result = result.filter { $0.sourceAppBundleID == appFilter }
         }
 
         return result
     }
 
     var availableApps: [String] {
-        let apps = Set(items.compactMap { $0.appBundleID })
+        let apps = Set(items.compactMap { $0.sourceAppBundleID })
         return apps.sorted()
     }
 

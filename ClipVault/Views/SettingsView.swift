@@ -11,6 +11,8 @@ import OSLog
 
 struct SettingsView: View {
     @State private var maxHistoryItems: Int = SettingsManager.shared.maxHistoryItems
+    @State private var imageStorageLimitMB = SettingsManager.shared.imageStorageLimitMB
+    @State private var storageError: String?
     @State private var captureRTF: Bool = SettingsManager.shared.captureRTF
     @State private var autoPasteOnSelect: Bool = SettingsManager.shared.autoPasteOnSelect
     @State private var launchAtLogin: Bool = LaunchAtLoginManager.shared.isEnabled
@@ -79,6 +81,8 @@ struct SettingsView: View {
 
             historyLimitRow
             Divider().padding(.vertical, 12)
+            imageStorageLimitRow
+            Divider().padding(.vertical, 12)
             captureRTFRow
             Divider().padding(.vertical, 12)
             clearHistoryRow
@@ -121,6 +125,34 @@ struct SettingsView: View {
             .labelsHidden()
             .frame(width: 80)
         }
+    }
+
+    private var imageStorageLimitRow: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("Image storage limit").font(.subheadline)
+                Spacer()
+                Stepper(value: $imageStorageLimitMB, in: 100...100_000, step: 100) {
+                    Text(ByteCountFormatter.string(fromByteCount: Int64(imageStorageLimitMB) * 1_000_000, countStyle: .decimal))
+                }.fixedSize()
+            }
+            Text("When full, oldest unpinned images are deleted first (FIFO). Pinned images count toward the limit; if they fill it, new images are not saved. Lowering this limit may delete old images.")
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Text("Limit covers saved encrypted image data; database overhead is extra.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+        .onChange(of: imageStorageLimitMB) { _, newValue in
+            guard newValue != SettingsManager.shared.imageStorageLimitMB else { return }
+            do { try ClipItemManager.shared.setImageStorageLimit(megabytes: newValue) }
+            catch {
+                imageStorageLimitMB = SettingsManager.shared.imageStorageLimitMB
+                storageError = error.localizedDescription
+            }
+        }
+        .alert("Could not change image limit", isPresented: Binding(get: { storageError != nil }, set: { if !$0 { storageError = nil } })) {
+            Button("OK") { storageError = nil }
+        } message: { Text(storageError ?? "") }
     }
 
     private var captureRTFRow: some View {
@@ -406,6 +438,7 @@ struct SettingsView: View {
 
     private func loadSettings() {
         maxHistoryItems = SettingsManager.shared.maxHistoryItems
+        imageStorageLimitMB = SettingsManager.shared.imageStorageLimitMB
         captureRTF = SettingsManager.shared.captureRTF
         autoPasteOnSelect = SettingsManager.shared.autoPasteOnSelect
         launchAtLogin = LaunchAtLoginManager.shared.isEnabled

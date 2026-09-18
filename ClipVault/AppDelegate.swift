@@ -282,7 +282,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let scale = 24 / max(thumbnail.size.width, thumbnail.size.height)
             menuThumbnail.size = NSSize(width: thumbnail.size.width * scale, height: thumbnail.size.height * scale)
             menuItem.image = menuThumbnail
-        } else if let bundleID = item.appBundleID,
+        } else if let bundleID = item.sourceAppBundleID,
            let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) {
             let icon = NSWorkspace.shared.icon(forFile: appURL.path)
             icon.size = NSSize(width: 16, height: 16)

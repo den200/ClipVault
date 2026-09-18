@@ -1,35 +1,41 @@
-//
-//  ClipItemManager.swift
-//  ClipVault
-//
-//  Created by Edd on 09/10/2025.
-//
-
 import Foundation
 import CoreData
 import AppKit
 import OSLog
 
+@MainActor
 class ClipItemManager {
     static let shared = ClipItemManager()
-
-    private let containerName = "ClipVault"
-
+    private let suppliedContext: NSManagedObjectContext?
+    private let suppliedImageLimit: Int64?
+    private var historyPrepared = false
+    private let settings = SettingsManager.shared
+    private let encryption = EncryptionManager.shared
     #if DEBUG
     private var useInMemoryStore = false
     #endif
 
+    init(context: NSManagedObjectContext? = nil, imageLimitBytes: Int64? = nil) {
+        suppliedContext = context
+        suppliedImageLimit = imageLimitBytes
+    }
+
+    // DELETE journaling checkpoints legacy WALs. Secure-delete scrubs old cells
+    // when plaintext metadata is replaced; startup compaction reclaims free pages.
+    static let storeOptions: [String: NSObject] = [
+        NSMigratePersistentStoresAutomaticallyOption: true as NSNumber,
+        NSInferMappingModelAutomaticallyOption: true as NSNumber,
+        NSSQLitePragmasOption: ["journal_mode": "DELETE", "secure_delete": "ON"] as NSDictionary,
+        NSSQLiteManualVacuumOption: true as NSNumber
+    ]
+
     private lazy var persistentContainer: NSPersistentContainer = {
-        let container = NSPersistentContainer(name: containerName)
-
-        // The image payload fields are an additive model change. Keep migration
-        // inference explicit so databases created by older ClipVault releases
-        // are upgraded in place without touching their encrypted contents.
-        container.persistentStoreDescriptions.forEach {
-            $0.shouldMigrateStoreAutomatically = true
-            $0.shouldInferMappingModelAutomatically = true
+        let container = NSPersistentContainer(name: "ClipVault")
+        for description in container.persistentStoreDescriptions {
+            for (key, value) in Self.storeOptions {
+                description.setOption(value, forKey: key)
+            }
         }
-
         #if DEBUG
         if useInMemoryStore {
             let description = NSPersistentStoreDescription()
@@ -37,212 +43,268 @@ class ClipItemManager {
             container.persistentStoreDescriptions = [description]
         }
         #endif
-
         container.loadPersistentStores { description, error in
-            if let error = error {
+            if let error {
                 AppLogger.persistence.error("Failed to load persistent store: \(error.localizedDescription, privacy: .public)")
-                AppLogger.persistence.error("Store URL: \(description.url?.path ?? "unknown", privacy: .public)")
                 fatalError("Unable to load persistent stores: \(error)")
             }
-            AppLogger.persistence.info("Loaded Core Data store at: \(description.url?.path ?? "in-memory", privacy: .public)")
         }
-
         container.viewContext.automaticallyMergesChangesFromParent = true
-        container.viewContext.mergePolicy = NSMergeByPropertyObjectTrumpMergePolicy
-
+        // Do not silently merge away conflicting encryption or metadata writes.
+        container.viewContext.mergePolicy = NSErrorMergePolicy
         return container
     }()
 
-    private var context: NSManagedObjectContext {
-        return persistentContainer.viewContext
-    }
-
-    private let settings = SettingsManager.shared
-    private let encryption = EncryptionManager.shared
-
-    private init() {}
-
-    // MARK: - Demo Mode
+    private var context: NSManagedObjectContext { suppliedContext ?? persistentContainer.viewContext }
+    private var imageLimit: Int64 { suppliedImageLimit ?? settings.imageStorageLimitBytes }
 
     #if DEBUG
-    /// Configures the manager to use an in-memory store for demo mode.
-    /// Must be called before any Core Data operations.
-    func configureForDemoMode() {
-        useInMemoryStore = true
-    }
-
-    /// Returns the managed object context for demo data population.
-    func getDemoContext() -> NSManagedObjectContext {
-        return context
-    }
+    func configureForDemoMode() { useInMemoryStore = true }
+    func getDemoContext() -> NSManagedObjectContext { context }
     #endif
 
-    // MARK: - Public Methods
-
-    /// Saves a new clipboard item with encryption
-    func saveClipItem(content: ClipContent, appBundleID: String?) throws -> ClipItem {
-        // Compute hash for deduplication
-        let hash = computeHash(for: content)
-
-        // Check if item already exists
-        if let existingItem = try? fetchItemByHash(hash) {
-            // Update timestamp and return existing item
-            existingItem.dateAdded = Date()
-            try context.save()
-            return existingItem
-        }
-
-        // Create new item
-        let item = NSEntityDescription.insertNewObject(forEntityName: "ClipItem", into: context) as! ClipItem
-        item.id = UUID()
-        item.dateAdded = Date()
-        item.isPinned = false
-        item.contentHash = hash
-        item.appBundleID = appBundleID
-
-        // Encrypt and store content
-        switch content {
-        case .text(let string):
-            try item.setEncryptedText(string)
-        case .rtf(let plainText, let rtfData):
-            // Store BOTH plain text (for search/preview) and RTF data (for pasting)
-            try item.setEncryptedText(plainText)
-            try item.setEncryptedRTF(rtfData)
-        case .image(let data, let type):
-            try item.setEncryptedImage(data, type: type)
-        }
-
-        try context.save()
-
-        // Enforce max items limit
-        try enforceMaxItemsLimit()
-
-        return item
-    }
-
-    /// Fetches all clipboard items sorted by date (pinned first)
-    func fetchAllItems() throws -> [ClipItem] {
-        let request = ClipItem.fetchAllRequest()
-        return try context.fetch(request)
-    }
-
-    /// Fetches items matching a search query
-    func searchItems(query: String) throws -> [ClipItem] {
-        let allItems = try fetchAllItems()
-
-        // Filter items by decrypting and matching text content
-        let lowercasedQuery = query.lowercased()
-        return allItems.filter { item in
-            if let text = item.getDecryptedText() {
-                return text.lowercased().contains(lowercasedQuery)
+    /// Prepare every ciphertext before changing any record, then commit once.
+    /// Existing content ciphertext, IDs and pins are never rewritten here.
+    static func protectLegacyMetadata(in context: NSManagedObjectContext) throws {
+        let items = try context.fetch(ClipItem.fetchAllRequest())
+        let legacy = items.filter { $0.encryptedMetadata == nil || !($0.contentHash ?? "").hasPrefix("hmac1:") }
+        for item in legacy {
+            if let payload = item.textContent ?? item.imageData ?? item.rtfData {
+                _ = try EncryptionManager.shared.decrypt(payload)
+                break
             }
-            return false
+        }
+        let prepared = try legacy.map { item -> (ClipItem, Data, String, Int64) in
+            guard let id = item.id, let hash = item.contentHash else { throw EncryptionManager.EncryptionError.invalidInput }
+            var metadata = try item.readMetadata()
+            metadata.imageByteCount = Int64(item.imageData?.count ?? 0)
+            let protectedHash = hash.hasPrefix("hmac1:") ? hash : try EncryptionManager.shared.deduplicationHash(legacyHash: hash, isImage: item.isImage)
+            metadata.contentHash = protectedHash
+            let ciphertext = try EncryptionManager.shared.encryptMetadata(JSONEncoder().encode(metadata), itemID: id)
+            return (item, ciphertext, protectedHash, Int64(item.imageData?.count ?? 0))
+        }
+        do {
+            for (item, ciphertext, hash, bytes) in prepared {
+                item.encryptedMetadata = ciphertext
+                item.dateAdded = nil
+                item.appBundleID = nil
+                item.imageType = nil
+                item.contentHash = hash
+                item.imageByteCount = bytes
+            }
+            if context.hasChanges { try context.save() }
+        } catch {
+            context.rollback()
+            throw error
         }
     }
 
-    /// Fetches the most recent item
+    private func prepareHistory() throws {
+        guard !historyPrepared else { return }
+        try Self.protectLegacyMetadata(in: context)
+        try enforceImageStorageLimit()
+        historyPrepared = true
+    }
+
+    func saveClipItem(content: ClipContent, appBundleID: String?) throws -> ClipItem {
+        try prepareHistory()
+        let hash = try computeHash(for: content)
+        if let existing = try context.fetch(ClipItem.fetchByHashRequest(hash: hash)).first {
+            do {
+                var metadata = try existing.readMetadata()
+                metadata.dateAdded = Date()
+                // FIFO age stays at the first capture, independent of recopying.
+                try existing.storeMetadata(metadata)
+                try context.save()
+                return existing
+            } catch { context.rollback(); throw error }
+        }
+
+        // Encrypt and preflight capacity before inserting or deleting anything.
+        var text: Data?, rtf: Data?, image: Data?, imageType: String?
+        switch content {
+        case .text(let string): text = try encryption.encryptString(string)
+        case .rtf(let plainText, let data):
+            text = try encryption.encryptString(plainText)
+            rtf = try encryption.encrypt(data)
+        case .image(let data, let type):
+            image = try encryption.encrypt(data)
+            imageType = type.rawValue
+        }
+        let victims = image == nil ? [] : try imageEvictions(limit: imageLimit, reserving: Int64(image!.count))
+        let item = NSEntityDescription.insertNewObject(forEntityName: "ClipItem", into: context) as! ClipItem
+        do {
+            item.id = UUID()
+            item.isPinned = false
+            item.contentHash = hash
+            item.textContent = text
+            item.rtfData = rtf
+            item.imageData = image
+            item.imageByteCount = Int64(image?.count ?? 0)
+            let now = Date()
+            try item.storeMetadata(ClipMetadata(dateAdded: now, firstCapturedAt: now, appBundleID: appBundleID, imageType: imageType, imageByteCount: Int64(image?.count ?? 0)))
+            for id in victims { context.delete(context.object(with: id)) }
+            try trimHistoryCount()
+            try context.save()
+            if !victims.isEmpty { ClipItem.clearThumbnailCache() }
+            return item
+        } catch { context.rollback(); throw error }
+    }
+
+    func fetchAllItems() throws -> [ClipItem] {
+        try prepareHistory()
+        let items = try context.fetch(ClipItem.fetchAllRequest())
+        // Fail closed if protected metadata cannot be authenticated.
+        let dated = try items.map { ($0, try $0.readMetadata().dateAdded ?? .distantPast) }
+        return dated.sorted {
+            if $0.0.isPinned != $1.0.isPinned { return $0.0.isPinned }
+            return $0.1 > $1.1
+        }.map { $0.0 }
+    }
+
+    func searchItems(query: String) throws -> [ClipItem] {
+        try fetchAllItems().filter { $0.getDecryptedText()?.localizedCaseInsensitiveContains(query) == true }
+    }
+
     func fetchMostRecentItem() throws -> ClipItem? {
-        let request = ClipItem.fetchAllRequest()
-        request.fetchLimit = 1
-        let items = try context.fetch(request)
-        return items.first
+        try fetchAllItems().max { ($0.displayDate ?? .distantPast) < ($1.displayDate ?? .distantPast) }
     }
 
-    /// Toggles the pinned status of an item
     func togglePin(item: ClipItem) throws {
-        item.isPinned.toggle()
-        try context.save()
+        try prepareHistory()
+        do { item.isPinned.toggle(); try context.save() }
+        catch { context.rollback(); throw error }
     }
 
-    /// Deletes a specific item
     func deleteItem(_ item: ClipItem) throws {
-        context.delete(item)
-        try context.save()
+        try prepareHistory()
+        do { context.delete(item); try context.save(); ClipItem.clearThumbnailCache() }
+        catch { context.rollback(); throw error }
     }
 
-    /// Clears all non-pinned items
-    func clearHistory() throws {
+    func clearHistory() throws { try clearItems(includePins: false) }
+    func clearAll() throws { try clearItems(includePins: true) }
+    private func clearItems(includePins: Bool) throws {
+        try prepareHistory()
         let request = ClipItem.fetchRequest()
-        request.predicate = NSPredicate(format: "isPinned == NO")
-
-        let items = try context.fetch(request)
-        items.forEach { context.delete($0) }
-        try context.save()
+        if !includePins { request.predicate = NSPredicate(format: "isPinned == NO") }
+        do {
+            for item in try context.fetch(request) { context.delete(item) }
+            try context.save()
+            ClipItem.clearThumbnailCache()
+        } catch { context.rollback(); throw error }
     }
 
-    /// Clears ALL items (including pinned)
-    func clearAll() throws {
-        let request = ClipItem.fetchRequest()
-        let items = try context.fetch(request)
-        items.forEach { context.delete($0) }
-        try context.save()
-    }
-
-    /// Writes an item to the system pasteboard
-    func writeToPasteboard(_ item: ClipItem) -> Bool {
-        writeToPasteboard(item, pasteboard: .general)
-    }
-
-    /// Pasteboard injection keeps restoration testable without changing the
-    /// production call sites that always use the system clipboard.
+    func writeToPasteboard(_ item: ClipItem) -> Bool { writeToPasteboard(item, pasteboard: .general) }
     func writeToPasteboard(_ item: ClipItem, pasteboard: NSPasteboard) -> Bool {
-        pasteboard.clearContents()
-
-        // Images have no plaintext fallback: decryption must succeed before any
-        // bytes are placed back on the pasteboard.
-        if let image = item.getDecryptedImage() {
+        if item.isImage {
+            guard let image = item.getDecryptedImage() else { return false }
+            pasteboard.clearContents()
             return pasteboard.setData(image.data, forType: image.type)
-        } else if let rtfData = item.getDecryptedRTF() {
-            return pasteboard.setData(rtfData, forType: .rtf)
+        } else if let rtf = item.getDecryptedRTF() {
+            pasteboard.clearContents()
+            return pasteboard.setData(rtf, forType: .rtf)
         } else if let text = item.getDecryptedText() {
+            pasteboard.clearContents()
             return pasteboard.setString(text, forType: .string)
         }
-
         return false
     }
 
-    // MARK: - Private Methods
-
-    private func fetchItemByHash(_ hash: String) throws -> ClipItem? {
-        let request = ClipItem.fetchByHashRequest(hash: hash)
-        let items = try context.fetch(request)
-        return items.first
+    private struct ImageRecord {
+        let objectID: NSManagedObjectID
+        let bytes: Int64
+        let pinned: Bool
+        let firstCapturedAt: Date
     }
 
-    private func enforceMaxItemsLimit() throws {
-        // UserDefaults may contain an out-of-range value after manual edits,
-        // profile management, or an older app version. A negative value would
-        // trap in suffix(from:), so normalize it before indexing the result.
-        let maxItems = max(1, settings.maxHistoryItems)
-
-        let request = ClipItem.fetchRequest()
-        request.predicate = NSPredicate(format: "isPinned == NO")
-        request.sortDescriptors = [NSSortDescriptor(keyPath: \ClipItem.dateAdded, ascending: false)]
-
-        let unpinnedItems = try context.fetch(request)
-
-        if unpinnedItems.count > maxItems {
-            let itemsToDelete = unpinnedItems.suffix(from: maxItems)
-            itemsToDelete.forEach { context.delete($0) }
-            try context.save()
+    /// Fetch metadata and byte counts without loading large image payloads.
+    private func imageRecords() throws -> [ImageRecord] {
+        let request = NSFetchRequest<NSDictionary>(entityName: "ClipItem")
+        request.resultType = .dictionaryResultType
+        request.predicate = NSPredicate(format: "imageByteCount > 0")
+        let objectID = NSExpressionDescription()
+        objectID.name = "recordID"
+        objectID.expression = NSExpression.expressionForEvaluatedObject()
+        objectID.expressionResultType = .objectIDAttributeType
+        request.propertiesToFetch = [objectID, "id", "imageByteCount", "isPinned", "encryptedMetadata", "contentHash"]
+        return try context.fetch(request).map { row in
+            guard let objectID = row["recordID"] as? NSManagedObjectID,
+                  let id = row["id"] as? UUID, let data = row["encryptedMetadata"] as? Data,
+                  let bytes = row["imageByteCount"] as? NSNumber else { throw EncryptionManager.EncryptionError.invalidInput }
+            let metadata = try JSONDecoder().decode(ClipMetadata.self, from: encryption.decryptMetadata(data, itemID: id))
+            guard metadata.version == 1, metadata.contentHash == row["contentHash"] as? String, bytes.int64Value > 0, bytes.int64Value == metadata.imageByteCount, bytes.int64Value <= Int64(ClipboardMonitor.maximumImageSize) + 28 else { throw EncryptionManager.EncryptionError.invalidOutput }
+            return ImageRecord(objectID: objectID, bytes: bytes.int64Value,
+                pinned: (row["isPinned"] as? NSNumber)?.boolValue ?? false,
+                firstCapturedAt: metadata.firstCapturedAt ?? metadata.dateAdded ?? .distantPast)
         }
     }
 
-    private func computeHash(for content: ClipContent) -> String {
+    private func imageEvictions(limit: Int64, reserving incoming: Int64 = 0, preserveExistingPins: Bool = false) throws -> [NSManagedObjectID] {
+        let records = try imageRecords()
+        let pinned = records.filter(\.pinned).reduce(Int64(0)) { $0 + $1.bytes }
+        // Reject before deleting any older image if the new one cannot fit.
+        guard incoming >= 0, incoming <= limit, (pinned <= limit - incoming || (preserveExistingPins && incoming == 0)) else { throw StorageError.pinnedCapacity }
+        var used = records.reduce(Int64(0)) { $0 + $1.bytes } + incoming
+        var victims: [NSManagedObjectID] = []
+        for image in records.filter({ !$0.pinned }).sorted(by: {
+            if $0.firstCapturedAt != $1.firstCapturedAt { return $0.firstCapturedAt < $1.firstCapturedAt }
+            return $0.objectID.uriRepresentation().absoluteString < $1.objectID.uriRepresentation().absoluteString
+        }) where used > limit {
+            victims.append(image.objectID)
+            used -= image.bytes
+        }
+        return victims
+    }
+
+    func imageStorageUsage() throws -> Int64 {
+        try prepareHistory()
+        return try imageRecords().reduce(0) { $0 + $1.bytes }
+    }
+
+    func enforceImageStorageLimit(limitBytes: Int64? = nil) throws {
+        // Existing pins may exceed a newly introduced default: keep them usable,
+        // evict unpinned images and block new captures until capacity is available.
+        let victims = try imageEvictions(limit: limitBytes ?? imageLimit, preserveExistingPins: true)
+        do {
+            for id in victims { context.delete(context.object(with: id)) }
+            if context.hasChanges { try context.save() }
+            if !victims.isEmpty { ClipItem.clearThumbnailCache() }
+        } catch { context.rollback(); throw error }
+    }
+
+    func setImageStorageLimit(megabytes: Int) throws {
+        try prepareHistory()
+        let normalized = min(max(megabytes, 100), 100_000)
+        let victims = try imageEvictions(limit: Int64(normalized) * 1_000_000)
+        do {
+            for id in victims { context.delete(context.object(with: id)) }
+            if context.hasChanges { try context.save() }
+            settings.imageStorageLimitMB = normalized
+            if !victims.isEmpty { ClipItem.clearThumbnailCache() }
+        } catch { context.rollback(); throw error }
+    }
+
+    private func trimHistoryCount() throws {
+        let items = try context.fetch(ClipItem.fetchAllRequest()).filter { !$0.isPinned }
+        let dated = try items.map { ($0, try $0.readMetadata().dateAdded ?? .distantPast) }
+        for item in dated.sorted(by: { $0.1 > $1.1 }).dropFirst(settings.maxHistoryItems) { context.delete(item.0) }
+    }
+
+    private func computeHash(for content: ClipContent) throws -> String {
         switch content {
-        case .text(let string):
-            return ClipItem.computeHash(for: string)
-        case .rtf(let plainText, _):
-            // Use plain text for hash so same content with different formatting = duplicate
-            return ClipItem.computeHash(for: plainText)
+        case .text(let string), .rtf(let string, _):
+            return try encryption.deduplicationHash(legacyHash: ClipItem.computeHash(for: string), isImage: false)
         case .image(let data, _):
-            // Hash the exact canonical representation selected at capture time.
-            return ClipItem.computeHash(for: data)
+            return try encryption.deduplicationHash(legacyHash: ClipItem.computeHash(for: data), isImage: true)
         }
+    }
+
+    enum StorageError: Error, LocalizedError {
+        case pinnedCapacity
+        var errorDescription: String? { "The image limit is too small for this image and your pinned images. Increase it or delete/unpin an image." }
     }
 }
-
-// MARK: - ClipContent Enum
 
 enum ClipContent {
     case text(String)

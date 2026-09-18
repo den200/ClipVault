@@ -67,3 +67,13 @@ The app is **signed and notarized** by Apple.
 - Encryption keys stored in Keychain with device-only access
 - No network transmission or telemetry
 - Popular password managers excluded by default
+
+### Image storage and metadata privacy
+
+Settings → General includes an image storage limit, default **1 GB** (1,000,000,000 bytes). It counts saved encrypted image bytes. When full, the oldest unpinned images are deleted first; recopying an image does not reset its FIFO age. Pinned images count toward the limit and are preserved. New images are rejected if pinned images leave insufficient space. Existing pins exceeding the default remain readable; raise the limit or remove/unpin them. Lowering the limit below pinned usage is rejected.
+
+The limit excludes database overhead and backups. Freed database pages are reused and compacted when the store opens; physical file size need not drop immediately.
+
+App identifiers, timestamps and image format metadata are authenticated and encrypted. Deduplication uses keyed HMAC indexes, with each index also authenticated inside its row's encrypted metadata. Existing stores convert transactionally using the existing Keychain key, preserving content ciphertext, IDs and pins. Metadata is bound to its clip UUID. A missing key or invalid ciphertext fails closed; decryption never creates a replacement key.
+
+This is field encryption, not whole-database encryption: row counts, ciphertext sizes, opaque IDs and pin flags remain visible. Old backups and previously collected logs may retain legacy metadata.
