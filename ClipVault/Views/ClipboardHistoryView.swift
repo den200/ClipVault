@@ -224,7 +224,6 @@ class ClipboardHistoryViewModel: ObservableObject {
 
     func copyToClipboard(item: ClipItem) {
         _ = itemManager.writeToPasteboard(item)
-        NotificationManager.shared.showCopiedNotification()
         let itemId = AppLogger.formatItemId(item.id)
         AppLogger.ui.debug("Copied to clipboard (id: \(itemId, privacy: .public))")
     }

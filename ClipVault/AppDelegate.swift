@@ -355,9 +355,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if autoPaste {
             // Auto-paste is enabled - check permissions
             if pasteHelper.checkAccessibilityPermissions() {
-                // Have permissions - paste and show notification (restore focus to previous app)
+                // Have permissions - paste and restore focus to the previous app
                 _ = pasteHelper.pasteItem(item, autoPaste: true, targetApp: previousFrontmostApp)
-                NotificationManager.shared.showPastedNotification()
             } else {
                 // No permissions - just prompt, don't copy
                 pasteHelper.promptForAccessibilityPermissions()
@@ -367,14 +366,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             _ = pasteHelper.pasteItem(item, autoPaste: false)
             let itemId = AppLogger.formatItemId(item.id)
             AppLogger.ui.debug("Item copied (id: \(itemId, privacy: .public))")
-            NotificationManager.shared.showCopiedNotification()
         }
     }
 
     @objc private func copyItemToPasteboard(_ sender: NSMenuItem) {
         guard let item = sender.representedObject as? ClipItem else { return }
         _ = itemManager.writeToPasteboard(item)
-        NotificationManager.shared.showCopiedNotification()
     }
 
     @objc private func pasteItem(_ sender: NSMenuItem) {
@@ -383,7 +380,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Check if we have accessibility permissions before attempting paste
         if pasteHelper.checkAccessibilityPermissions() {
             _ = pasteHelper.pasteItem(item, autoPaste: true, targetApp: previousFrontmostApp)
-            NotificationManager.shared.showPastedNotification()
         } else {
             // No permissions - just prompt, don't copy
             pasteHelper.promptForAccessibilityPermissions()
