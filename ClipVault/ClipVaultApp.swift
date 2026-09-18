@@ -16,7 +16,7 @@ struct ClipVaultApp: App {
         WindowGroup("ClipVaultLifecycle") {
             HiddenWindowView()
         }
-        .defaultSize(width: 1, height: 1)
+        .defaultSize(width: 320, height: 200)
 
         // Native macOS Settings scene
         Settings {

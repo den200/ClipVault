@@ -19,7 +19,7 @@ struct HiddenWindowView: View {
 
     var body: some View {
         Color.clear
-            .frame(width: 1, height: 1)
+            .frame(minWidth: 320, minHeight: 200)
             .onReceive(NotificationCenter.default.publisher(for: .openClipVaultSettings)) { _ in
                 openSettings()
             }
@@ -27,19 +27,13 @@ struct HiddenWindowView: View {
                 // Find and hide the lifecycle window
                 DispatchQueue.main.async {
                     for window in NSApp.windows where window.title == "ClipVaultLifecycle" {
-                        // Make the keepalive window truly invisible and non-interactive
-                        window.styleMask = [.borderless]
-                        window.collectionBehavior = [.auxiliary, .ignoresCycle, .transient, .canJoinAllSpaces]
+                        // Keep SwiftUI's normal hosting-window geometry. Mutating
+                        // styleMask or forcing a 1-point content size during layout
+                        // can cause an endless constraints update on recent macOS.
                         window.isExcludedFromWindowsMenu = true
-                        window.level = .floating
-                        window.isOpaque = false
                         window.alphaValue = 0
-                        window.backgroundColor = .clear
-                        window.hasShadow = false
                         window.ignoresMouseEvents = true
-                        window.canHide = false
-                        window.setContentSize(NSSize(width: 1, height: 1))
-                        window.setFrameOrigin(NSPoint(x: -5000, y: -5000))
+                        window.orderOut(nil)
                         break
                     }
                 }

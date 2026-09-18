@@ -8,6 +8,7 @@
 import Foundation
 import AppKit
 import OSLog
+import ImageIO
 
 class ClipboardMonitor {
     static let shared = ClipboardMonitor()
@@ -76,15 +77,10 @@ class ClipboardMonitor {
         lastChangeCount = currentChangeCount
 
         // Capture the new clipboard content
-        captureClipboard()
+        captureClipboard(from: .general, appBundleID: NSWorkspace.shared.frontmostApplication?.bundleIdentifier)
     }
 
-    private func captureClipboard() {
-        let pasteboard = NSPasteboard.general
-
-        // Get the frontmost application bundle ID
-        let frontmostApp = NSWorkspace.shared.frontmostApplication
-        let appBundleID = frontmostApp?.bundleIdentifier
+    func captureClipboard(from pasteboard: NSPasteboard, appBundleID: String?) {
 
         // Check if this app should be excluded
         if let bundleID = appBundleID, exclusionManager.shouldExclude(appBundleID: bundleID) {
@@ -97,7 +93,8 @@ class ClipboardMonitor {
         // advertises text or metadata; selecting one canonical image type avoids
         // duplicate captures and prevents that metadata becoming the clip.
 
-        if let image = Self.imageContent(from: pasteboard) {
+        if Self.hasImageRepresentation(on: pasteboard) {
+            guard let image = Self.imageContent(from: pasteboard) else { return }
             do {
                 let item = try itemManager.saveClipItem(content: image, appBundleID: appBundleID)
                 onNewClipDetected?(item)
@@ -159,15 +156,29 @@ class ClipboardMonitor {
         }
     }
 
+    private static func declaredTypes(on pasteboard: NSPasteboard) -> [NSPasteboard.PasteboardType] {
+        // The board-level types include automatic conversions (e.g. JPEG to
+        // TIFF). Item types identify bytes actually supplied by the source.
+        pasteboard.pasteboardItems?.flatMap { $0.types } ?? pasteboard.types ?? []
+    }
+
+    static func hasImageRepresentation(on pasteboard: NSPasteboard) -> Bool {
+        supportedImageTypes.contains { declaredTypes(on: pasteboard).contains($0) }
+    }
+
     /// Returns at most one image representation, in a stable preference order.
     /// Data over the limit is ignored rather than decoded or persisted.
     static func imageContent(from pasteboard: NSPasteboard) -> ClipContent? {
-        for type in supportedImageTypes where pasteboard.availableType(from: [type]) != nil {
-            guard let data = pasteboard.data(forType: type), !data.isEmpty else { continue }
+        for type in supportedImageTypes where declaredTypes(on: pasteboard).contains(type) {
+            let item = pasteboard.pasteboardItems?.first { $0.types.contains(type) }
+            guard let data = item?.data(forType: type) ?? pasteboard.data(forType: type), !data.isEmpty else { continue }
             guard data.count <= maximumImageSize else {
                 AppLogger.clipboard.notice("Skipped image larger than \(maximumImageSize) bytes")
-                return nil
+                continue
             }
+            guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+                  CGImageSourceGetCount(source) > 0,
+                  CGImageSourceCopyPropertiesAtIndex(source, 0, nil) != nil else { continue }
             return .image(data: data, type: type)
         }
         return nil

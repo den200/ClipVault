@@ -30,6 +30,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         #if DEBUG
+        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil {
+            itemManager.configureForDemoMode()
+            return
+        }
         demoMode = DemoMode.fromArguments()
         if let demoMode {
             configureDemoMode(demoMode)
@@ -150,6 +154,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func buildMainMenu() {
+        if let searchField {
+            NotificationCenter.default.removeObserver(self, name: NSControl.textDidChangeNotification, object: searchField)
+        }
         menu = NSMenu()
 
         // Search field - create once
@@ -267,8 +274,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Images use a small, downsampled preview; other items retain their
         // source application icon.
         if item.isImage, let thumbnail = item.getImageThumbnail(maxPixelSize: 32) {
-            thumbnail.size = NSSize(width: 24, height: 24)
-            menuItem.image = thumbnail
+            let menuThumbnail = thumbnail.copy() as! NSImage
+            let scale = 24 / max(thumbnail.size.width, thumbnail.size.height)
+            menuThumbnail.size = NSSize(width: thumbnail.size.width * scale, height: thumbnail.size.height * scale)
+            menuItem.image = menuThumbnail
         } else if let bundleID = item.appBundleID,
            let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) {
             let icon = NSWorkspace.shared.icon(forFile: appURL.path)

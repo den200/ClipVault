@@ -93,7 +93,7 @@ class ClipItemManager {
         }
 
         // Create new item
-        let item = ClipItem(context: context)
+        let item = NSEntityDescription.insertNewObject(forEntityName: "ClipItem", into: context) as! ClipItem
         item.id = UUID()
         item.dateAdded = Date()
         item.isPinned = false

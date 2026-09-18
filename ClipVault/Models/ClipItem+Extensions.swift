@@ -76,8 +76,9 @@ extension ClipItem {
             kCGImageSourceShouldCacheImmediately: true
         ]
         guard let thumbnail = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { return nil }
-        let result = NSImage(cgImage: thumbnail, size: .zero)
-        Self.thumbnailCache.setObject(result, forKey: cacheKey)
+        let result = NSImage(cgImage: thumbnail, size: NSSize(width: thumbnail.width, height: thumbnail.height))
+        Self.thumbnailCache.totalCostLimit = 16 * 1_024 * 1_024
+        Self.thumbnailCache.setObject(result, forKey: cacheKey, cost: thumbnail.bytesPerRow * thumbnail.height)
         return result
     }
 
